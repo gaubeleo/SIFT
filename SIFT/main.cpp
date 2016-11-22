@@ -22,9 +22,57 @@ using namespace cv;
 #define FILTER_WIDTH 9
 #define FILTER_HEIGHT 9
 
+//////////////////////////////////////////////////////////////////////////////////
+// Little Helpers
+
+double absolute(double x){
+	return x >= 0 ? x : -x;
+}
+
+double getMax(const Mat &img){
+	double maxValue = -1.; 
+	for (int y = 0; y < img.rows; y++){
+		const double *row = img.ptr<double>(y);
+		for (int x = 0; x < img.cols; x++){
+			if (row[x] > maxValue || maxValue == -1.)
+				maxValue = row[x];
+		}
+	}
+	assert(maxValue >= 0);
+	return maxValue;
+}
+
+double getMin(const Mat &img){
+	double minValue = -1.;
+	for (int y = 0; y < img.rows; y++){
+		const double *row = img.ptr<double>(y);
+		for (int x = 0; x < img.cols; x++){
+			if (row[x] < minValue || minValue == -1.)
+				minValue = row[x];
+		}
+	}
+	assert(minValue >= 0);
+	return minValue;
+}
+
+Mat normalizeImage(const Mat &img){
+	assert(img.type() == CV_64FC1);
+
+	Mat normalizedImg;
+	img.copyTo(normalizedImg);
+
+	double maxValue = getMax(img);
+
+	normalizedImg /= maxValue;
+
+	return normalizedImg;
+}
+
+//////////////////////////////////////////////////////////////////////////////////
+
 // Load an image from a given path using OpenCV 
 // use IMREAD_COLOR or IMREAD_GRAYSCALE as flags
-Mat loadImg(string directory, string filename, int flags){
+Mat loadImg(const string directory, const string filename, int flags){
 	string fullFilename = string(directory + "\\" + filename);
 	Mat image;
 	image = imread(fullFilename, flags);
@@ -39,7 +87,7 @@ Mat loadImg(string directory, string filename, int flags){
 }
 
 // saves an image to the specified path
-bool saveImg(string directory, string filename, Mat img){
+bool saveImg(const string directory, const string filename, const Mat &img){
 	string fullFilename = string(directory + "\\" + filename);
 	struct stat sb;
 
@@ -227,12 +275,13 @@ vector<vector<Mat>> createGaussianPyramid(const Mat &img){
 	return gp;
 }
 
-void showGaussianPyramid(vector<vector<Mat>> &gp, bool scaleUp){
+void showGaussianPyramid(const vector<vector<Mat>> &gp, bool scaleUp){
 	cout << "displaying Gaussian Pyramid:" << endl;
 	assert(gp.size() == OCTAVE_COUNT);
 
+	Mat img;
 	for (int o = 0; o < OCTAVE_COUNT; o++){
-		vector<Mat> octave = gp.at(o);
+		const vector<Mat> octave = gp.at(o);
 
 		if (o == 0)
 			assert(octave.size() == STEP_COUNT + 3);
@@ -242,11 +291,77 @@ void showGaussianPyramid(vector<vector<Mat>> &gp, bool scaleUp){
 		for (int s = 0; s < octave.size(); s++){
 			double k = pow(2, (double)s / (double)STEP_COUNT);
 			double sigma = (1 << o) * k*SIGMA;
-			Mat img = octave.at(s);
+			octave.at(s).copyTo(img);
 			if (scaleUp)
-				imshow("GP at o=" + to_string(o) + ", s=" + to_string(sigma), upscale(img, 1<<o+1));
-			else
-				imshow("GP at o=" + to_string(o) + ", s=" + to_string(sigma), img);
+				img = upscale(img, 1 << (o + 1));
+
+			imshow("GP at o=" + to_string(o) + ", s=" + to_string(sigma), img);
+			waitKey();
+			destroyAllWindows();
+		}
+	}
+}
+
+Mat calcDifference(const Mat &img0, const Mat &img1){
+	assert(img0.rows == img1.rows && img0.cols == img1.cols);
+	assert(img0.type() == img1.type() && img0.type() == CV_64FC1);
+
+	Mat difference(img0.rows, img0.cols, CV_64FC1);
+
+	for (int y = 0; y < difference.rows; y++){
+		double *rowDiff = difference.ptr<double>(y);
+		const double *row0 = img0.ptr<double>(y);
+		const double *row1 = img1.ptr<double>(y);
+		for (int x = 0; x < difference.cols; x++){
+			rowDiff[x] = absolute(row0[x] - row1[x]);
+		}
+	}
+	return difference;
+}
+
+vector<vector<Mat>> createDifferenceOfGaussians(const vector<vector<Mat>> &gp){
+	cout << "creating Difference of Gaussians: " << endl;
+	vector<vector<Mat>> DoG;
+
+	for (int o = 0; o < OCTAVE_COUNT; o++){
+		cout << "\toctave: " << o << endl;
+		vector<Mat> octaveDoG;
+		const vector<Mat> octaveGP = gp.at(o);
+		for (int s = 0; s < octaveGP.size() - 1; s++){
+			cout << "\t\tstep: " << s << endl;
+			Mat difference = calcDifference(octaveGP.at(s), octaveGP.at(s + 1));
+			octaveDoG.push_back(difference);
+		}
+		DoG.push_back(octaveDoG);
+	}
+	return DoG;
+}
+
+// could be same method as showGaussianPyramid except for assertions
+void showDifferenceOfGaussians(const vector<vector<Mat>> &DoG, bool scaleUp, bool normalize){
+	cout << "displaying Difference of Gaussians:" << endl;
+	assert(DoG.size() == OCTAVE_COUNT);
+
+	Mat img;
+	for (int o = 0; o < OCTAVE_COUNT; o++){
+		const vector<Mat> octave = DoG.at(o);
+
+		if (o == 0)
+			assert(octave.size() == STEP_COUNT + 2);
+		else
+			assert(octave.size() == STEP_COUNT + 1);
+
+		for (int s = 0; s < octave.size(); s++){
+			double k = pow(2, (double)s / (double)STEP_COUNT);
+			double sigma = (1 << o) * k*SIGMA;
+
+			octave.at(s).copyTo(img);
+			if (scaleUp)
+				img = upscale(img, 1 << (o + 1));
+			if (normalize)
+				img = normalizeImage(img);
+				
+			imshow("DoG at o=" + to_string(o) + ", s=" + to_string(sigma), img);
 			waitKey();
 			destroyAllWindows();
 		}
@@ -259,7 +374,10 @@ int main(){
 	Mat img = loadImg("src", "line.png", IMREAD_COLOR); //IMREAD_COLOR
 
 	vector<vector<Mat>> gp = createGaussianPyramid(img);
-	showGaussianPyramid(gp, true);
+	// showGaussianPyramid(gp, true);
+
+	vector<vector<Mat>> DoG = createDifferenceOfGaussians(gp);
+	showDifferenceOfGaussians(DoG, true, true);
 
 	return 0;
 }
