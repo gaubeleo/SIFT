@@ -29,11 +29,35 @@ double absolute(double x){
 	return x >= 0 ? x : -x;
 }
 
-double getMax(const Mat &img){
+bool isMin(double value, double y0, double y1, double y2)
+{
+	if (value >= y0)
+		return false;
+	if (value >= y1)
+		return false;
+	if (value >= y2)
+		return false;
+	return true;
+}
+
+bool isMax(double value, double y0, double y1, double y2)
+{
+//	if (value <= y0)
+//		return false;
+	if (value <= y1)
+		return false;
+	if (value <= y2)
+		return false;
+	return true;
+}
+
+double getMax(const Mat &img, bool ignoreCenter){
 	double maxValue = -1.; 
 	for (int y = 0; y < img.rows; y++){
 		const double *row = img.ptr<double>(y);
 		for (int x = 0; x < img.cols; x++){
+			if (ignoreCenter && y * 2 + 1 == img.rows && x * 2 + 1 == img.cols)
+				continue;
 			if (row[x] > maxValue || maxValue == -1.)
 				maxValue = row[x];
 		}
@@ -42,11 +66,13 @@ double getMax(const Mat &img){
 	return maxValue;
 }
 
-double getMin(const Mat &img){
+double getMin(const Mat &img, bool ignoreCenter){
 	double minValue = -1.;
 	for (int y = 0; y < img.rows; y++){
 		const double *row = img.ptr<double>(y);
 		for (int x = 0; x < img.cols; x++){
+			if (ignoreCenter && y * 2 + 1 == img.rows && x * 2 + 1 == img.cols)
+				continue;
 			if (row[x] < minValue || minValue == -1.)
 				minValue = row[x];
 		}
@@ -61,7 +87,7 @@ Mat normalizeImage(const Mat &img){
 	Mat normalizedImg;
 	img.copyTo(normalizedImg);
 
-	double maxValue = getMax(img);
+	double maxValue = getMax(img, false);
 
 	normalizedImg /= maxValue;
 
@@ -69,6 +95,7 @@ Mat normalizeImage(const Mat &img){
 }
 
 //////////////////////////////////////////////////////////////////////////////////
+// basic Image input/output
 
 // Load an image from a given path using OpenCV 
 // use IMREAD_COLOR or IMREAD_GRAYSCALE as flags
@@ -99,6 +126,9 @@ bool saveImg(const string directory, const string filename, const Mat &img){
 
 	return imwrite(fullFilename, img);
 }
+
+//////////////////////////////////////////////////////////////////////////////////
+// Filters
 
 // apply a filter on a single patch of an image, thus kernel size and value size need to be of same dimensions
 // the calculated value gets stored at the location of pixel
@@ -147,6 +177,68 @@ Mat filter(const Mat &img, const Mat &kernel){
 
 			const Mat tmp = img(Rect(x - xOffset, y - yOffset, kernel.cols, kernel.rows));
 			_filter(&row[x], tmp, kernel);
+		}
+	}
+	return filteredImg;
+}
+
+void _maxFilter(double* pixel, const Mat &values)
+{
+	double value = getMax(values, false);
+	*pixel = value;
+}
+
+Mat maxFilter(const Mat &img, int kernelHeight, int kernelWidth)
+{
+	assert(kernelHeight % 2 == 1 && kernelWidth % 2 == 1);
+	assert(img.type() == CV_64FC1);
+
+	int yOffset = (kernelHeight - 1) / 2;
+	int xOffset = (kernelWidth - 1) / 2;
+
+	Mat filteredImg(img.rows, img.cols, CV_64FC1, Scalar(0.));
+
+	for (int y = 0; y < img.rows; y++){
+		double *row = filteredImg.ptr<double>(y);
+		for (int x = 0; x < img.cols; x++){
+			int x0 = max(x - xOffset, 0);
+			int y0 = max(y - yOffset, 0);
+			int w = min(img.cols-x0, kernelWidth);
+			int h = min(img.rows-y0, kernelHeight);
+			Rect rect(x0, y0, w, h);
+			const Mat tmp = img(rect);
+			_maxFilter(&row[x], tmp);
+		}
+	}
+	return filteredImg;
+}
+
+void _minFilter(double* pixel, const Mat &values)
+{
+	double value = getMin(values, false);
+	*pixel = value;
+}
+
+Mat minFilter(const Mat &img, int kernelHeight, int kernelWidth)
+{
+	assert(kernelHeight % 2 == 1 && kernelWidth % 2 == 1);
+	assert(img.type() == CV_64FC1);
+
+	int yOffset = (kernelHeight - 1) / 2;
+	int xOffset = (kernelWidth - 1) / 2;
+
+	Mat filteredImg(img.rows, img.cols, CV_64FC1, Scalar(0.));
+
+	for (int y = 0; y < img.rows; y++){
+		double *row = filteredImg.ptr<double>(y);
+		for (int x = 0; x < img.cols; x++){
+			int x0 = max(x - xOffset, 0);
+			int y0 = max(y - yOffset, 0);
+			int w = min(img.cols - x0, kernelWidth);
+			int h = min(img.rows - y0, kernelHeight);
+			Rect rect(x0, y0, w, h);
+			const Mat tmp = img(rect);
+			_minFilter(&row[x], tmp);
 		}
 	}
 	return filteredImg;
@@ -260,13 +352,13 @@ vector<vector<Mat>> createGaussianPyramid(const Mat &img){
 	cout << "\tfiltering the image on different GaussianKernels" << endl;
 	Mat octaveImg, bluredImg;
 	for (int o = 0; o < OCTAVE_COUNT; o++){
-		cout << "\toctave: " << o << endl;
+		//cout << "\toctave: " << o << endl;
 		vector<Mat> octave;
 		octaveImg = downscale(grayImg, 1<<o); // downscale original image by 2^o
 		if (o == 0)
 			octave.push_back(octaveImg); // include original image in first octave
 		for (int s = 0; s < STEP_COUNT + 2; s++){
-			cout << "\t\tstep: " << s << endl;
+			//cout << "\t\tstep: " << s << endl;
 			bluredImg = filter(octaveImg, kernels.at(s));	
 			octave.push_back(bluredImg);
 		}
@@ -324,11 +416,11 @@ vector<vector<Mat>> createDifferenceOfGaussians(const vector<vector<Mat>> &gp){
 	vector<vector<Mat>> DoG;
 
 	for (int o = 0; o < OCTAVE_COUNT; o++){
-		cout << "\toctave: " << o << endl;
+		//cout << "\toctave: " << o << endl;
 		vector<Mat> octaveDoG;
 		const vector<Mat> octaveGP = gp.at(o);
 		for (int s = 0; s < octaveGP.size() - 1; s++){
-			cout << "\t\tstep: " << s << endl;
+			//cout << "\t\tstep: " << s << endl;
 			Mat difference = calcDifference(octaveGP.at(s), octaveGP.at(s + 1));
 			octaveDoG.push_back(difference);
 		}
@@ -368,6 +460,114 @@ void showDifferenceOfGaussians(const vector<vector<Mat>> &DoG, bool scaleUp, boo
 	}
 }
 
+void filterExtrema(const vector<vector<Mat>>& DoG, vector<vector<Mat>>* minima, vector<vector<Mat>>* maxima)
+{
+	for (int o = 0; o < OCTAVE_COUNT; o++){
+		double scale = (1 << o);
+
+		const vector<Mat> octaveDoG = DoG.at(o);
+
+		vector<Mat> octaveMin;
+		vector<Mat> octaveMax;
+
+		for (int s = 0; s < octaveDoG.size(); s++)
+		{
+			const Mat diff = octaveDoG.at(s);
+
+			Mat minImg = minFilter(diff, 3, 3);
+			Mat maxImg = maxFilter(diff, 3, 3);
+
+			octaveMin.push_back(minImg);
+			octaveMax.push_back(maxImg);
+		}
+
+		minima->push_back(octaveMin);
+		maxima->push_back(octaveMax);
+	}
+}
+
+
+struct Extremum
+{
+	int y;
+	int x;
+	double sigma;
+	bool isMax;
+};
+
+// calculate all Minima and Maximas in DoG
+vector<Extremum> calcExtrema(const vector<vector<Mat>>& DoG, const vector<vector<Mat>> &minima, const vector<vector<Mat>> &maxima)
+{
+	cout << "calculating Extrema in DoG: " << endl;
+	vector<Extremum> extrema;
+
+	Extremum extremum;
+	for (int o = 0; o < OCTAVE_COUNT; o++){
+		cout << "\toctave: " << o << endl;
+		int scale = (1 << o);
+
+		const vector<Mat> octaveDoG = DoG.at(o);
+		const vector<Mat> octaveMin = minima.at(o);
+		const vector<Mat> octaveMax = maxima.at(o);
+
+		for (int s = 1; s < octaveDoG.size() - 1; s++)
+		{
+			cout << "\t\tstep: " << s << endl;
+			double k = pow(2, (double)s / (double)STEP_COUNT);
+
+			const Mat diff = octaveDoG.at(s);
+
+			const Mat min0 = octaveMin.at(s-1);
+			const Mat min2 = octaveMin.at(s+1);
+
+			const Mat max0 = octaveMax.at(s-1);
+			const Mat max2 = octaveMax.at(s+1);
+
+			for (int y = 1; y < diff.rows-1; y++)
+			{
+				const double *rowDiff = diff.ptr<double>(y);
+
+				const double *rowMin0 = min0.ptr<double>(y);
+				const double *rowMin2 = min2.ptr<double>(y);
+
+				const double *rowMax0 = max0.ptr<double>(y);
+				const double *rowMax2 = max2.ptr<double>(y);
+
+				for (int x = 1; x < diff.cols-1; x++)
+				{
+					double diffValue = rowDiff[x];
+
+					const Rect rect(x-1, y-1, 3, 3);
+					const Mat temp = diff(rect);
+					double minValue1 = getMin(temp, true);
+					double maxValue1 = getMax(temp, true);
+
+					if (diffValue > maxValue1)
+					{
+						cout << diffValue << ", " << rowMax0[x] << endl;
+					}
+
+					if (isMin(diffValue, rowMin0[x], minValue1, rowMin2[x]))
+					{
+						double sigma = scale * k * SIGMA;
+						extremum = { scale*y + scale / 2, scale*x + scale / 2, sigma, false };
+						extrema.push_back(extremum);
+					}
+					else if (isMax(diffValue, rowMax0[x], maxValue1, rowMax2[x]))
+					{
+						double sigma = scale * k * SIGMA;
+						extremum = { scale*y + scale / 2, scale*x + scale / 2, sigma, true };
+						extrema.push_back(extremum);
+					}
+				}
+			}
+		}
+	}
+
+
+	return extrema;
+}
+
 /////////////////////////////////////////////////////////////////////////////
 
 int main(){
@@ -377,7 +577,22 @@ int main(){
 	// showGaussianPyramid(gp, true);
 
 	vector<vector<Mat>> DoG = createDifferenceOfGaussians(gp);
-	showDifferenceOfGaussians(DoG, true, true);
+	// showDifferenceOfGaussians(DoG, true, true);
+
+	vector<vector<Mat>> minima;
+	vector<vector<Mat>> maxima;
+
+	filterExtrema(DoG, &minima, &maxima);
+
+	// showDifferenceOfGaussians(minima, true, true);
+	 showDifferenceOfGaussians(maxima, true, true);
+
+	vector<Extremum> extrema = calcExtrema(DoG, minima, maxima);
+
+	for (auto extremum : extrema)
+	{
+		cout << extremum.y << ", " << extremum.x << ", " << extremum.isMax << ", " << extremum.sigma << endl;
+	}
 
 	return 0;
 }
