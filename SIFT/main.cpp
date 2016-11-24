@@ -8,6 +8,7 @@
 #include <opencv2\core\core.hpp>
 #include <opencv2\highgui\highgui.hpp>
 #include <opencv2\imgproc\imgproc.hpp>
+#include <opencv2\nonfree\features2d.hpp>
 
 #define _USE_MATH_DEFINES
 #include <math.h>
@@ -17,13 +18,61 @@ using namespace cv;
 
 #define SIGMA 1.6
 #define OCTAVE_COUNT 4
-#define STEP_COUNT 4
+#define STEP_COUNT 2
+//#define MIN_THRESHOLD 0.001
 
 #define FILTER_WIDTH 9
 #define FILTER_HEIGHT 9
 
 //////////////////////////////////////////////////////////////////////////////////
 // Little Helpers
+
+void printMat(const Mat &img){
+	assert(img.type() == CV_64FC1);
+
+	for (int y = 0; y < img.rows; y++){
+		const double *row = img.ptr<double>(y);
+		for (int x = 0; x < img.cols; x++){
+			if (x == 0)
+				cout << "[ ";
+			cout << row[x];
+			if (x != img.cols - 1)
+				cout << ", ";
+			else
+				cout << " ]" << endl;
+		}
+	}
+	cout << endl;
+}
+
+double sumMat(const Mat &img){
+	assert(img.type() == CV_64FC1);
+
+	double sum = 0.;
+	for (int y = 0; y < img.rows; y++){
+		const double *row = img.ptr<double>(y);
+		for (int x = 0; x < img.cols; x++){
+			sum += row[x];
+		}
+	}
+	return sum;
+}
+
+bool isIdentical(const Mat &img0, const Mat &img1){
+	assert(img0.type() == CV_64FC1 && img1.type() == CV_64FC1);
+	// throw error if Mats are not of same size instead of just false!
+	assert(img0.rows == img1.rows && img0.cols == img1.cols);
+
+	for (int y = 0; y < img0.rows; y++){
+		const double *row0 = img0.ptr<double>(y);
+		const double *row1 = img1.ptr<double>(y);
+		for (int x = 0; x < img0.cols; x++){
+			if (row0[x] != row1[x])
+				return false;
+		}
+	}
+	return true;
+}
 
 double absolute(double x){
 	return x >= 0 ? x : -x;
@@ -42,8 +91,8 @@ bool isMin(double value, double y0, double y1, double y2)
 
 bool isMax(double value, double y0, double y1, double y2)
 {
-//	if (value <= y0)
-//		return false;
+	if (value <= y0)
+		return false;
 	if (value <= y1)
 		return false;
 	if (value <= y2)
@@ -313,6 +362,7 @@ Mat createGaussianKernel(double sigma){
 		}
 	}
 	kernel /= sum;
+
 	return kernel;
 }
 
@@ -350,7 +400,7 @@ vector<vector<Mat>> createGaussianPyramid(const Mat &img){
 	const vector<Mat> kernels = createGaussianKernels();
 
 	cout << "\tfiltering the image on different GaussianKernels" << endl;
-	Mat octaveImg, bluredImg;
+	Mat octaveImg, bluredImg, temp;
 	for (int o = 0; o < OCTAVE_COUNT; o++){
 		//cout << "\toctave: " << o << endl;
 		vector<Mat> octave;
@@ -359,7 +409,11 @@ vector<vector<Mat>> createGaussianPyramid(const Mat &img){
 			octave.push_back(octaveImg); // include original image in first octave
 		for (int s = 0; s < STEP_COUNT + 2; s++){
 			//cout << "\t\tstep: " << s << endl;
+			//printMat(kernels.at(s));
+			//filter2D(octaveImg, bluredImg, -1, kernels.at(s));
 			bluredImg = filter(octaveImg, kernels.at(s));	
+			//filter2D(octaveImg, temp, -1, kernels.at(s-1));
+			//isIdentical(temp, bluredImg);
 			octave.push_back(bluredImg);
 		}
 		gp.push_back(octave);
@@ -372,7 +426,7 @@ void showGaussianPyramid(const vector<vector<Mat>> &gp, bool scaleUp){
 	assert(gp.size() == OCTAVE_COUNT);
 
 	Mat img;
-	for (int o = 0; o < OCTAVE_COUNT; o++){
+	for (unsigned o = 0; o < OCTAVE_COUNT; o++){
 		const vector<Mat> octave = gp.at(o);
 
 		if (o == 0)
@@ -380,7 +434,7 @@ void showGaussianPyramid(const vector<vector<Mat>> &gp, bool scaleUp){
 		else 
 			assert(octave.size() == STEP_COUNT + 2);
 
-		for (int s = 0; s < octave.size(); s++){
+		for (unsigned s = 0; s < octave.size(); s++){
 			double k = pow(2, (double)s / (double)STEP_COUNT);
 			double sigma = (1 << o) * k*SIGMA;
 			octave.at(s).copyTo(img);
@@ -415,12 +469,13 @@ vector<vector<Mat>> createDifferenceOfGaussians(const vector<vector<Mat>> &gp){
 	cout << "creating Difference of Gaussians: " << endl;
 	vector<vector<Mat>> DoG;
 
-	for (int o = 0; o < OCTAVE_COUNT; o++){
+	for (unsigned o = 0; o < OCTAVE_COUNT; o++){
 		//cout << "\toctave: " << o << endl;
 		vector<Mat> octaveDoG;
 		const vector<Mat> octaveGP = gp.at(o);
-		for (int s = 0; s < octaveGP.size() - 1; s++){
+		for (unsigned s = 0; s < octaveGP.size() - 1; s++){
 			//cout << "\t\tstep: " << s << endl;
+			//cout << isIdentical(octaveGP.at(s), octaveGP.at(s + 1)) << endl;
 			Mat difference = calcDifference(octaveGP.at(s), octaveGP.at(s + 1));
 			octaveDoG.push_back(difference);
 		}
@@ -435,7 +490,7 @@ void showDifferenceOfGaussians(const vector<vector<Mat>> &DoG, bool scaleUp, boo
 	assert(DoG.size() == OCTAVE_COUNT);
 
 	Mat img;
-	for (int o = 0; o < OCTAVE_COUNT; o++){
+	for (unsigned o = 0; o < OCTAVE_COUNT; o++){
 		const vector<Mat> octave = DoG.at(o);
 
 		if (o == 0)
@@ -443,7 +498,7 @@ void showDifferenceOfGaussians(const vector<vector<Mat>> &DoG, bool scaleUp, boo
 		else
 			assert(octave.size() == STEP_COUNT + 1);
 
-		for (int s = 0; s < octave.size(); s++){
+		for (unsigned s = 0; s < octave.size(); s++){
 			double k = pow(2, (double)s / (double)STEP_COUNT);
 			double sigma = (1 << o) * k*SIGMA;
 
@@ -462,7 +517,7 @@ void showDifferenceOfGaussians(const vector<vector<Mat>> &DoG, bool scaleUp, boo
 
 void filterExtrema(const vector<vector<Mat>>& DoG, vector<vector<Mat>>* minima, vector<vector<Mat>>* maxima)
 {
-	for (int o = 0; o < OCTAVE_COUNT; o++){
+	for (unsigned o = 0; o < OCTAVE_COUNT; o++){
 		double scale = (1 << o);
 
 		const vector<Mat> octaveDoG = DoG.at(o);
@@ -470,7 +525,7 @@ void filterExtrema(const vector<vector<Mat>>& DoG, vector<vector<Mat>>* minima, 
 		vector<Mat> octaveMin;
 		vector<Mat> octaveMax;
 
-		for (int s = 0; s < octaveDoG.size(); s++)
+		for (unsigned s = 0; s < octaveDoG.size(); s++)
 		{
 			const Mat diff = octaveDoG.at(s);
 
@@ -510,7 +565,7 @@ vector<Extremum> calcExtrema(const vector<vector<Mat>>& DoG, const vector<vector
 		const vector<Mat> octaveMin = minima.at(o);
 		const vector<Mat> octaveMax = maxima.at(o);
 
-		for (int s = 1; s < octaveDoG.size() - 1; s++)
+		for (unsigned s = 1; s < octaveDoG.size() - 1; s++)
 		{
 			cout << "\t\tstep: " << s << endl;
 			double k = pow(2, (double)s / (double)STEP_COUNT);
@@ -542,10 +597,10 @@ vector<Extremum> calcExtrema(const vector<vector<Mat>>& DoG, const vector<vector
 					double minValue1 = getMin(temp, true);
 					double maxValue1 = getMax(temp, true);
 
-					if (diffValue > maxValue1)
-					{
-						cout << diffValue << ", " << rowMax0[x] << endl;
-					}
+					//if (diffValue > maxValue1 && diffValue > rowMax0[x])
+					//{
+					//	cout << diffValue << ", " << rowMax0[x] << endl;
+					//}
 
 					if (isMin(diffValue, rowMin0[x], minValue1, rowMin2[x]))
 					{
@@ -563,31 +618,52 @@ vector<Extremum> calcExtrema(const vector<vector<Mat>>& DoG, const vector<vector
 			}
 		}
 	}
-
-
 	return extrema;
+}
+
+void showKeypoints(const Mat &img, const vector<Extremum>keypoints){
+	
+	for (Extremum keypoint : keypoints){
+		
+	}
 }
 
 /////////////////////////////////////////////////////////////////////////////
 
 int main(){
-	Mat img = loadImg("src", "line.png", IMREAD_COLOR); //IMREAD_COLOR
+	Mat img = loadImg("src", "lenna.jpg", IMREAD_COLOR); //IMREAD_COLOR
+
+	SiftFeatureDetector detector;
+	vector<KeyPoint> keypoints;
+	detector.detect(img, keypoints);
+
+	// Add results to image and save.
+	Mat output;
+	drawKeypoints(img, keypoints, output, Scalar(0., 0., 255.), DrawMatchesFlags::DRAW_RICH_KEYPOINTS);
+
+	imshow("OPENCV_SIFT", output);
+	waitKey();
+	destroyAllWindows();
+
+	resize(img, img, Size(256, 256));
 
 	vector<vector<Mat>> gp = createGaussianPyramid(img);
-	// showGaussianPyramid(gp, true);
+	//showGaussianPyramid(gp, true);
 
 	vector<vector<Mat>> DoG = createDifferenceOfGaussians(gp);
-	// showDifferenceOfGaussians(DoG, true, true);
+	//showDifferenceOfGaussians(DoG, true, true);
 
 	vector<vector<Mat>> minima;
 	vector<vector<Mat>> maxima;
 
 	filterExtrema(DoG, &minima, &maxima);
 
-	// showDifferenceOfGaussians(minima, true, true);
-	 showDifferenceOfGaussians(maxima, true, true);
+	showDifferenceOfGaussians(minima, true, true);
+	showDifferenceOfGaussians(maxima, true, true);
 
 	vector<Extremum> extrema = calcExtrema(DoG, minima, maxima);
+	showKeypoints(img, extrema);
+
 
 	for (auto extremum : extrema)
 	{
