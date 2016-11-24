@@ -18,11 +18,28 @@ using namespace cv;
 
 #define SIGMA 1.6
 #define OCTAVE_COUNT 4
-#define STEP_COUNT 2
-//#define MIN_THRESHOLD 0.001
+#define STEP_COUNT 3
 
-#define FILTER_WIDTH 9
-#define FILTER_HEIGHT 9
+#define FILTER_WIDTH 3
+#define FILTER_HEIGHT 3
+
+#define NORM_VALUE 0.1
+
+//////////////////////////////////////////////////////////////////////////////////
+
+void cvSIFT(const Mat &img)
+{
+	SiftFeatureDetector detector;
+	vector<KeyPoint> keypoints;
+	detector.detect(img, keypoints);
+
+	Mat output;
+	drawKeypoints(img, keypoints, output, Scalar(0., 0., 255.), DrawMatchesFlags::DRAW_RICH_KEYPOINTS);
+
+	imshow("OPENCV_SIFT", output);
+	waitKey();
+	destroyAllWindows();
+}
 
 //////////////////////////////////////////////////////////////////////////////////
 // Little Helpers
@@ -56,6 +73,26 @@ double sumMat(const Mat &img){
 		}
 	}
 	return sum;
+}
+
+Mat convertTo8bit(const Mat &img, bool color)
+{
+	assert(img.type() == CV_64FC1);
+	Mat newImg, temp;
+	img.copyTo(temp);
+	temp *= 255.;
+	temp.convertTo(newImg, CV_8UC1);
+
+	if (color){
+		Mat colorImg;
+		vector<Mat> channels;
+		channels.push_back(newImg);
+		channels.push_back(newImg);
+		channels.push_back(newImg);
+		merge(channels, colorImg);
+		return colorImg;
+	}
+	return newImg;
 }
 
 bool isIdentical(const Mat &img0, const Mat &img1){
@@ -101,32 +138,36 @@ bool isMax(double value, double y0, double y1, double y2)
 }
 
 double getMax(const Mat &img, bool ignoreCenter){
-	double maxValue = -1.; 
+	assert(img.rows > 0 && img.cols > 0);
+
+	double maxValue = DBL_MIN;
 	for (int y = 0; y < img.rows; y++){
 		const double *row = img.ptr<double>(y);
 		for (int x = 0; x < img.cols; x++){
 			if (ignoreCenter && y * 2 + 1 == img.rows && x * 2 + 1 == img.cols)
 				continue;
-			if (row[x] > maxValue || maxValue == -1.)
+			if (maxValue == DBL_MIN || row[x] > maxValue)
 				maxValue = row[x];
 		}
 	}
-	assert(maxValue >= 0);
+	assert(maxValue != DBL_MIN);
 	return maxValue;
 }
 
 double getMin(const Mat &img, bool ignoreCenter){
-	double minValue = -1.;
+	assert(img.rows > 0 && img.cols > 0);
+
+	double minValue = DBL_MAX;
 	for (int y = 0; y < img.rows; y++){
 		const double *row = img.ptr<double>(y);
 		for (int x = 0; x < img.cols; x++){
 			if (ignoreCenter && y * 2 + 1 == img.rows && x * 2 + 1 == img.cols)
 				continue;
-			if (row[x] < minValue || minValue == -1.)
+			if (minValue == DBL_MAX || row[x] < minValue)
 				minValue = row[x];
 		}
 	}
-	assert(minValue >= 0);
+	assert(minValue != DBL_MAX);
 	return minValue;
 }
 
@@ -137,14 +178,52 @@ Mat normalizeImage(const Mat &img){
 	img.copyTo(normalizedImg);
 
 	double maxValue = getMax(img, false);
-
 	normalizedImg /= maxValue;
+	//normalizedImg /= NORM_VALUE;
 
 	return normalizedImg;
 }
 
+Mat absoluteImage(const Mat &img)
+{
+	assert(img.type() == CV_64FC1);
+
+	Mat absoluteImg(img.rows, img.cols, img.type());
+	for (int y = 0; y < img.rows; y++){
+		double *rowAbs = absoluteImg.ptr<double>(y);
+		const double *row = img.ptr<double>(y);
+		for (int x = 0; x < img.cols; x++){
+			rowAbs[x] = absolute(row[x]);
+		}
+	}
+
+	return absoluteImg;
+}
+
+Mat doubleImage(const Mat &img)
+{
+	assert(img.type() == CV_64FC1);
+
+	Mat doubledImg;
+	resize(img, doubledImg, Size(), 2, 2);
+
+	return doubledImg;
+}
+
 //////////////////////////////////////////////////////////////////////////////////
 // basic Image input/output
+
+void showImg(const Mat &img, string title)
+{
+	imshow(title, img);
+	waitKey();
+	destroyAllWindows();
+}
+
+void showImg(const Mat &img)
+{
+	showImg(img, "SIFT");
+}
 
 // Load an image from a given path using OpenCV 
 // use IMREAD_COLOR or IMREAD_GRAYSCALE as flags
@@ -371,7 +450,7 @@ vector<Mat> createGaussianKernels(){
 	cout << "\tcreating GaussianKernels " << endl;
 	vector<Mat> kernels;
 	Mat kernel;
-	for (int s = 0; s < STEP_COUNT + 2; s++){
+	for (int s = 0; s < STEP_COUNT + 3; s++){
 		double k = pow(2, (double)s / (double)STEP_COUNT);
 		kernel = createGaussianKernel(k*SIGMA);
 		kernels.push_back(kernel);
@@ -382,7 +461,7 @@ vector<Mat> createGaussianKernels(){
 // returns GaussianPyramid [OCTAVECOUNT][STEPCOUNT+2](various image sizes betweeen octaves, but same within single octave)
 vector<vector<Mat>> createGaussianPyramid(const Mat &img){
 	cout << "creating Gaussian Pyramid: " << endl;
-	vector<vector<Mat>> gp;
+	vector<vector<Mat>> gp(OCTAVE_COUNT);
 	
 	Mat grayImg;
 	if (img.channels() == 1)
@@ -397,26 +476,35 @@ vector<vector<Mat>> createGaussianPyramid(const Mat &img){
 	grayImg.convertTo(grayImg, CV_64FC1);
 	grayImg /= 255.;
 
-	const vector<Mat> kernels = createGaussianKernels();
+	//grayImg = doubleImage(grayImg);
+	GaussianBlur(grayImg, grayImg, Size(), 0.5); // 1. if image_doubling was used
+
+	//const vector<Mat> kernels = createGaussianKernels();
 
 	cout << "\tfiltering the image on different GaussianKernels" << endl;
-	Mat octaveImg, bluredImg, temp;
+	Mat octaveImg;
 	for (int o = 0; o < OCTAVE_COUNT; o++){
-		//cout << "\toctave: " << o << endl;
-		vector<Mat> octave;
-		octaveImg = downscale(grayImg, 1<<o); // downscale original image by 2^o
-		if (o == 0)
-			octave.push_back(octaveImg); // include original image in first octave
-		for (int s = 0; s < STEP_COUNT + 2; s++){
-			//cout << "\t\tstep: " << s << endl;
-			//printMat(kernels.at(s));
-			//filter2D(octaveImg, bluredImg, -1, kernels.at(s));
-			bluredImg = filter(octaveImg, kernels.at(s));	
-			//filter2D(octaveImg, temp, -1, kernels.at(s-1));
-			//isIdentical(temp, bluredImg);
-			octave.push_back(bluredImg);
+		vector<Mat> &octave = gp.at(o);
+		octave.resize(STEP_COUNT + 3);
+		for (int s = 0; s < STEP_COUNT + 3; s++){
+			Mat &bluredImg = octave.at(s);
+			if (s == 0){
+				if (o == 0)
+					octaveImg = grayImg;
+				else
+					octaveImg = downscale(gp.at(o-1).at(STEP_COUNT), 2);
+				bluredImg = octaveImg;
+			}
+			else{
+				//printMat(kernels.at(s));
+				//filter2D(octaveImg, bluredImg, -1, kernels.at(s));
+				double k = pow(2, (double)s / (double)STEP_COUNT);
+				GaussianBlur(octaveImg, bluredImg, Size(), k*SIGMA);
+				//bluredImg = filter(octaveImg, kernels.at(s));	
+				//filter2D(octaveImg, temp, -1, kernels.at(s-1));
+				//isIdentical(temp, bluredImg);
+			}
 		}
-		gp.push_back(octave);
 	}
 	return gp;
 }
@@ -429,19 +517,16 @@ void showGaussianPyramid(const vector<vector<Mat>> &gp, bool scaleUp){
 	for (unsigned o = 0; o < OCTAVE_COUNT; o++){
 		const vector<Mat> octave = gp.at(o);
 
-		if (o == 0)
-			assert(octave.size() == STEP_COUNT + 3);
-		else 
-			assert(octave.size() == STEP_COUNT + 2);
+		assert(octave.size() == STEP_COUNT + 3);
 
 		for (unsigned s = 0; s < octave.size(); s++){
 			double k = pow(2, (double)s / (double)STEP_COUNT);
 			double sigma = (1 << o) * k*SIGMA;
 			octave.at(s).copyTo(img);
 			if (scaleUp)
-				img = upscale(img, 1 << (o + 1));
+				img = upscale(img, 1 << o);
 
-			imshow("GP at o=" + to_string(o) + ", s=" + to_string(sigma), img);
+			imshow("Gaussian Pyramid", img);
 			waitKey();
 			destroyAllWindows();
 		}
@@ -459,7 +544,7 @@ Mat calcDifference(const Mat &img0, const Mat &img1){
 		const double *row0 = img0.ptr<double>(y);
 		const double *row1 = img1.ptr<double>(y);
 		for (int x = 0; x < difference.cols; x++){
-			rowDiff[x] = absolute(row0[x] - row1[x]);
+			rowDiff[x] = row0[x] - row1[x];
 		}
 	}
 	return difference;
@@ -493,10 +578,7 @@ void showDifferenceOfGaussians(const vector<vector<Mat>> &DoG, bool scaleUp, boo
 	for (unsigned o = 0; o < OCTAVE_COUNT; o++){
 		const vector<Mat> octave = DoG.at(o);
 
-		if (o == 0)
-			assert(octave.size() == STEP_COUNT + 2);
-		else
-			assert(octave.size() == STEP_COUNT + 1);
+		assert(octave.size() == STEP_COUNT + 2);
 
 		for (unsigned s = 0; s < octave.size(); s++){
 			double k = pow(2, (double)s / (double)STEP_COUNT);
@@ -504,11 +586,11 @@ void showDifferenceOfGaussians(const vector<vector<Mat>> &DoG, bool scaleUp, boo
 
 			octave.at(s).copyTo(img);
 			if (scaleUp)
-				img = upscale(img, 1 << (o + 1));
+				img = upscale(img, 1 << o);
 			if (normalize)
 				img = normalizeImage(img);
 				
-			imshow("DoG at o=" + to_string(o) + ", s=" + to_string(sigma), img);
+			imshow("DoG", img);
 			waitKey();
 			destroyAllWindows();
 		}
@@ -541,22 +623,13 @@ void filterExtrema(const vector<vector<Mat>>& DoG, vector<vector<Mat>>* minima, 
 	}
 }
 
-
-struct Extremum
-{
-	int y;
-	int x;
-	double sigma;
-	bool isMax;
-};
-
 // calculate all Minima and Maximas in DoG
-vector<Extremum> calcExtrema(const vector<vector<Mat>>& DoG, const vector<vector<Mat>> &minima, const vector<vector<Mat>> &maxima)
+vector<vector<vector<KeyPoint>>> calcExtrema(const vector<vector<Mat>>& DoG, const vector<vector<Mat>> &minima, const vector<vector<Mat>> &maxima)
 {
 	cout << "calculating Extrema in DoG: " << endl;
-	vector<Extremum> extrema;
+	vector<vector<vector<KeyPoint>>> extrema(OCTAVE_COUNT);
 
-	Extremum extremum;
+	KeyPoint extremum;
 	for (int o = 0; o < OCTAVE_COUNT; o++){
 		cout << "\toctave: " << o << endl;
 		int scale = (1 << o);
@@ -564,6 +637,9 @@ vector<Extremum> calcExtrema(const vector<vector<Mat>>& DoG, const vector<vector
 		const vector<Mat> octaveDoG = DoG.at(o);
 		const vector<Mat> octaveMin = minima.at(o);
 		const vector<Mat> octaveMax = maxima.at(o);
+
+		vector<vector<KeyPoint>> &octaveExtrema = extrema.at(o);
+		octaveExtrema.resize(STEP_COUNT);
 
 		for (unsigned s = 1; s < octaveDoG.size() - 1; s++)
 		{
@@ -578,6 +654,9 @@ vector<Extremum> calcExtrema(const vector<vector<Mat>>& DoG, const vector<vector
 			const Mat max0 = octaveMax.at(s-1);
 			const Mat max2 = octaveMax.at(s+1);
 
+			vector<KeyPoint> &stepExtrema = octaveExtrema.at(s-1);
+
+			int m = 0, mm = 0;
 			for (int y = 1; y < diff.rows-1; y++)
 			{
 				const double *rowDiff = diff.ptr<double>(y);
@@ -597,55 +676,106 @@ vector<Extremum> calcExtrema(const vector<vector<Mat>>& DoG, const vector<vector
 					double minValue1 = getMin(temp, true);
 					double maxValue1 = getMax(temp, true);
 
-					//if (diffValue > maxValue1 && diffValue > rowMax0[x])
-					//{
-					//	cout << diffValue << ", " << rowMax0[x] << endl;
-					//}
+					/*if (diffValue > maxValue1 && diffValue > rowMax0[x])
+					{
+						cout << diffValue << ", " << rowMax0[x] << endl;
+					}*/
 
 					if (isMin(diffValue, rowMin0[x], minValue1, rowMin2[x]))
 					{
+						mm++;
 						double sigma = scale * k * SIGMA;
-						extremum = { scale*y + scale / 2, scale*x + scale / 2, sigma, false };
-						extrema.push_back(extremum);
+						//cout << x << ", " << scale << ", " << diff.rows << endl;
+						extremum = KeyPoint(float(x*scale + scale/2), float(y*scale + scale/2), 3.*scale, -1, 0, o, -1);
+						stepExtrema.push_back(extremum);
 					}
-					else if (isMax(diffValue, rowMax0[x], maxValue1, rowMax2[x]))
+					else if ((isMax(diffValue, rowMax0[x], maxValue1, rowMax2[x])))
 					{
-						double sigma = scale * k * SIGMA;
-						extremum = { scale*y + scale / 2, scale*x + scale / 2, sigma, true };
-						extrema.push_back(extremum);
+						m++;
+						extremum = KeyPoint(x*scale + scale / 2, y*scale + scale / 2, 8 * scale, -1, 0, o, 1);
+						stepExtrema.push_back(extremum);
 					}
 				}
 			}
+			cout << m<< ", " << mm << endl;
 		}
 	}
 	return extrema;
 }
 
-void showKeypoints(const Mat &img, const vector<Extremum>keypoints){
-	
-	for (Extremum keypoint : keypoints){
-		
+Mat drawKeypoints(const Mat &img, const vector<KeyPoint> keypoints){
+	Mat keypointImg;
+	if (img.channels() == 3 && img.type() != CV_64FC1)
+		keypointImg = img;
+	else if (img.type() == CV_64FC1)
+		keypointImg = convertTo8bit(img, true);
+	else
+		assert(false);
+
+	drawKeypoints(keypointImg, keypoints, keypointImg, Scalar(0., 0., 255.), DrawMatchesFlags::DRAW_RICH_KEYPOINTS);
+
+	return keypointImg;
+}
+
+Mat drawKeypoints(const Mat &img, const vector<vector<vector<KeyPoint>>> keypoints)
+{
+	Mat output;
+	for (int o = 0; o < OCTAVE_COUNT; o++){
+		const vector<vector<KeyPoint>> octaveKP = keypoints.at(o);
+		for (unsigned s = 0; s < octaveKP.size(); s++){
+			const vector<KeyPoint> &KP = octaveKP.at(s);
+			output = drawKeypoints(img, KP);
+		}
+	}
+
+	return output;
+}
+
+// could be same method as showGaussianPyramid except for assertions
+void showDoGkeypoints(const vector<vector<Mat>> &DoG, const vector<vector<vector<KeyPoint>>> keypoints){
+	cout << "displaying Difference of Gaussians:" << endl;
+	assert(DoG.size() == OCTAVE_COUNT);
+
+	Mat img, keypointImg;
+	for (unsigned o = 0; o < OCTAVE_COUNT; o++){
+		const vector<Mat> octave = DoG.at(o);
+		const vector<vector<KeyPoint>> octaveKP = keypoints.at(o);
+
+		assert(octave.size() == STEP_COUNT + 2);
+		assert(octaveKP.size() == STEP_COUNT);
+
+		for (unsigned s = 0; s < octave.size(); s++){
+
+			double k = pow(2, (double)s / (double)STEP_COUNT);
+			double sigma = (1 << o) * k*SIGMA;
+
+			octave.at(s).copyTo(img);
+			img = absoluteImage(img);
+			img = normalizeImage(img);
+			img = upscale(img, 1 << o);
+
+			if (s == 0 || s == STEP_COUNT + 1);
+				//showImg(img, "DOG keypoints");
+			else{
+				const vector<KeyPoint> &KP = octaveKP.at(s - 1);
+				keypointImg = drawKeypoints(img, KP);
+				showImg(keypointImg, "DOG keypoints");
+			}
+		}
 	}
 }
 
 /////////////////////////////////////////////////////////////////////////////
 
 int main(){
-	Mat img = loadImg("src", "lenna.jpg", IMREAD_COLOR); //IMREAD_COLOR
+	//Mat img = loadImg("src", "lenna.jpg", IMREAD_COLOR);
+	Mat img = loadImg("src", "Testimage_gradients.jpg", IMREAD_COLOR);
+	//Mat img = loadImg("src", "photographer.jpg", IMREAD_COLOR);
+	//Mat img = loadImg("src", "line.png", IMREAD_COLOR);
 
-	SiftFeatureDetector detector;
-	vector<KeyPoint> keypoints;
-	detector.detect(img, keypoints);
+	//cvSIFT(img);
 
-	// Add results to image and save.
-	Mat output;
-	drawKeypoints(img, keypoints, output, Scalar(0., 0., 255.), DrawMatchesFlags::DRAW_RICH_KEYPOINTS);
-
-	imshow("OPENCV_SIFT", output);
-	waitKey();
-	destroyAllWindows();
-
-	resize(img, img, Size(256, 256));
+	//resize(img, img, Size(256, 256));
 
 	vector<vector<Mat>> gp = createGaussianPyramid(img);
 	//showGaussianPyramid(gp, true);
@@ -658,17 +788,12 @@ int main(){
 
 	filterExtrema(DoG, &minima, &maxima);
 
-	showDifferenceOfGaussians(minima, true, true);
-	showDifferenceOfGaussians(maxima, true, true);
+	//showDifferenceOfGaussians(minima, true, true);
+	//showDifferenceOfGaussians(maxima, true, true);
 
-	vector<Extremum> extrema = calcExtrema(DoG, minima, maxima);
-	showKeypoints(img, extrema);
-
-
-	for (auto extremum : extrema)
-	{
-		cout << extremum.y << ", " << extremum.x << ", " << extremum.isMax << ", " << extremum.sigma << endl;
-	}
+	vector<vector<vector<KeyPoint>>> extrema = calcExtrema(DoG, minima, maxima);
+	showImg(drawKeypoints(img, extrema));
+	showDoGkeypoints(DoG, extrema);
 
 	return 0;
 }
